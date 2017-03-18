@@ -87,9 +87,6 @@ describe('socket.io', function(){
       srv.set('authorization', function(o, f) { f(null, false); });
 
       var socket = client(httpSrv);
-      socket.on('connect', function(){
-        expect().fail();
-      });
       socket.on('error', function(err) {
         expect(err).to.be('Not authorized');
         done();
@@ -167,7 +164,7 @@ describe('socket.io', function(){
           if (err) return done(err);
           var ctype = res.headers['content-type'];
           expect(ctype).to.be('application/javascript');
-          expect(res.headers.etag).to.be(clientVersion);
+          expect(res.headers.etag).to.be('"' + clientVersion + '"');
           expect(res.text).to.match(/engine\.io/);
           expect(res.status).to.be(200);
           done();
@@ -179,7 +176,7 @@ describe('socket.io', function(){
         io(srv);
         request(srv)
         .get('/socket.io/socket.io.js')
-        .set('If-None-Match', clientVersion)
+        .set('If-None-Match', '"' + clientVersion + '"')
         .end(function(err, res){
           if (err) return done(err);
           expect(res.statusCode).to.be(304);
@@ -251,7 +248,7 @@ describe('socket.io', function(){
       request.get('http://localhost:54013/socket.io/default/')
        .query({ transport: 'polling' })
        .end(function (err, res) {
-          expect(res.status).to.be(400);
+          expect(res.status).to.be(403);
           done();
         });
     });
@@ -262,7 +259,7 @@ describe('socket.io', function(){
        .query({ transport: 'polling' })
        .set('origin', 'http://herp.derp')
        .end(function (err, res) {
-          expect(res.status).to.be(400);
+          expect(res.status).to.be(403);
           done();
        });
     });
@@ -305,7 +302,7 @@ describe('socket.io', function(){
        .set('origin', 'http://herp.derp')
        .query({ transport: 'polling' })
        .end(function (err, res) {
-          expect(res.status).to.be(400);
+          expect(res.status).to.be(403);
           done();
         });
     });
@@ -357,7 +354,7 @@ describe('socket.io', function(){
        .set('origin', 'http://foo.example')
        .query({ transport: 'polling' })
        .end(function (err, res) {
-          expect(res.status).to.be(400);
+          expect(res.status).to.be(403);
           done();
         });
     });
@@ -399,7 +396,7 @@ describe('socket.io', function(){
       var net    = require('net');
       var server = net.createServer();
 
-      var clientSocket = ioc('ws://0.0.0.0:' + PORT);
+      var clientSocket = ioc('ws://0.0.0.0:' + PORT, { reconnection: false });
 
       clientSocket.on('disconnect', function init() {
         expect(Object.keys(sio.nsps['/'].sockets).length).to.equal(0);
@@ -640,6 +637,31 @@ describe('socket.io', function(){
         sio.on('connection', function(socket){
           socket.disconnect();
           done();
+        });
+      });
+    });
+
+    it('should fire a `disconnecting` event just before leaving all rooms', function(done){
+      var srv = http();
+      var sio = io(srv);
+      srv.listen(function(){
+        var socket = client(srv);
+
+        sio.on('connection', function(s){
+          s.join('a', function(){
+            s.disconnect();
+          });
+
+          var total = 2;
+          s.on('disconnecting', function(reason){
+            expect(Object.keys(s.rooms)).to.eql([s.id, 'a']);
+            total--;
+          });
+
+          s.on('disconnect', function(reason){
+            expect(Object.keys(s.rooms)).to.eql([]);
+            --total || done();
+          });
         });
       });
     });
@@ -956,12 +978,12 @@ describe('socket.io', function(){
       var srv = http();
       var sio = io(srv);
       srv.listen(function(){
-        var socket = client(srv);
+        var socket = client(srv, { reconnection: false });
         sio.on('connection', function(s){
           s.on('error', function(err){
             expect(err).to.be.an(Error);
             s.on('disconnect', function(reason){
-              expect(reason).to.be('client error');
+              expect(reason).to.be('forced close');
               done();
             });
           });
@@ -1521,9 +1543,7 @@ describe('socket.io', function(){
       var srv = http();
       var sio = io(srv);
       srv.listen(function() {
-        var addr = srv.listen().address();
-        var url = 'ws://localhost:' + addr.port + '?key1=1&key2=2';
-        var socket = ioc(url);
+        var socket = client(srv, {query: {key1: 1, key2: 2}});
         sio.on('connection', function(s) {
           var parsed = require('url').parse(s.request.url);
           var query = require('querystring').parse(parsed.query);
@@ -1537,10 +1557,8 @@ describe('socket.io', function(){
     it('should see query parameters sent from secondary namespace connections in handshake object', function(done){
       var srv = http();
       var sio = io(srv);
-      var addr = srv.listen().address();
-      var url = 'ws://localhost:' + addr.port;
-      var client1 = ioc(url);
-      var client2 = ioc(url + '/connection2', {query: {key1: 'aa', key2: '&=bb'}});
+      var client1 = client(srv);
+      var client2 = client(srv, '/connection2', {query: {key1: 'aa', key2: '&=bb'}});
       sio.on('connection', function(s){
       });
       sio.of('/connection2').on('connection', function(s){
@@ -1622,11 +1640,10 @@ describe('socket.io', function(){
         var clientSocket = client(srv, { reconnectionAttempts: 10, reconnectionDelay: 100 });
         clientSocket.once('connect', function(){
           srv.close(function(){
-            srv.listen(port, function(){
-              clientSocket.on('reconnect', function(){
-                clientSocket.emit('ev', 'payload');
-              });
+            clientSocket.on('reconnect', function(){
+              clientSocket.emit('ev', 'payload');
             });
+            sio.listen(port);
           });
         });
       });
@@ -1666,7 +1683,7 @@ describe('socket.io', function(){
       var srv = http();
       var sio = io(srv);
       srv.listen(function(){
-        var socket = client(srv);
+        var socket = client(srv, { reconnection: false });
         sio.on('connection', function(s){
           s.conn.on('upgrade', function(){
             console.log('\033[96mNote: warning expected and normal in test.\033[39m');
@@ -1683,7 +1700,7 @@ describe('socket.io', function(){
       var srv = http();
       var sio = io(srv);
       srv.listen(function(){
-        var socket = client(srv);
+        var socket = client(srv, { reconnection: false });
         sio.on('connection', function(s){
           s.once('error', function(err){
             expect(err.message).to.match(/Illegal attachments/);
@@ -1700,7 +1717,7 @@ describe('socket.io', function(){
       var srv = http();
       var sio = io(srv);
       srv.listen(function(){
-        var socket = client(srv);
+        var socket = client(srv, { reconnection: false });
         sio.on('connection', function(s){
           s.once('error', function(err){
             expect(err.message).to.match(/Illegal attachments/);
@@ -2066,6 +2083,21 @@ describe('socket.io', function(){
         });
       });
     });
+
+    it('allows to join several rooms at once', function(done) {
+      var srv = http();
+      var sio = io(srv);
+
+      srv.listen(function(){
+        var socket = client(srv);
+        sio.on('connection', function(s){
+          s.join(['a', 'b', 'c'], function(){
+            expect(Object.keys(s.rooms)).to.eql([s.id, 'a', 'b', 'c']);
+            done();
+          });
+        });
+      });
+    });
   });
 
   describe('middleware', function(done){
@@ -2111,9 +2143,6 @@ describe('socket.io', function(){
       });
       srv.listen(function(){
         var socket = client(srv);
-        socket.on('connect', function(){
-          done(new Error('nope'));
-        });
         socket.on('error', function(err){
           expect(err).to.be('Authentication error');
           done();
@@ -2132,9 +2161,6 @@ describe('socket.io', function(){
       });
       srv.listen(function(){
         var socket = client(srv);
-        socket.on('connect', function(){
-          done(new Error('nope'));
-        });
         socket.on('error', function(err){
           expect(err).to.eql({ a: 'b', c: 3 });
           done();
@@ -2208,6 +2234,99 @@ describe('socket.io', function(){
         chat.on('connect', function() {
           expect(result).to.eql([1, 2, 3, 4]);
           done();
+        });
+      });
+    });
+  });
+
+  describe('socket middleware', function(done){
+    var Socket = require('../lib/socket');
+
+    it('should call functions', function(done){
+      var srv = http();
+      var sio = io(srv);
+      var run = 0;
+
+      srv.listen(function(){
+        var socket = client(srv, { multiplex: false });
+
+        socket.emit('join', 'woot');
+
+        sio.on('connection', function(socket){
+          socket.use(function(event, next){
+            expect(event).to.eql(['join', 'woot']);
+            event.unshift('wrap');
+            run++;
+            next();
+          });
+          socket.use(function(event, next){
+            expect(event).to.eql(['wrap', 'join', 'woot']);
+            run++;
+            next();
+          });
+          socket.on('wrap', function(data1, data2){
+            expect(data1).to.be('join');
+            expect(data2).to.be('woot');
+            expect(run).to.be(2);
+            done();
+          });
+        });
+      });
+    });
+
+    it('should pass errors', function(done){
+      var srv = http();
+      var sio = io(srv);
+
+      srv.listen(function(){
+        var clientSocket = client(srv, { multiplex: false });
+
+        clientSocket.emit('join', 'woot');
+
+        clientSocket.on('error', function(err){
+          expect(err).to.be('Authentication error');
+          done();
+        });
+
+        sio.on('connection', function(socket){
+          socket.use(function(event, next){
+            next(new Error('Authentication error'));
+          });
+          socket.use(function(event, next){
+            done(new Error('nope'));
+          });
+
+          socket.on('join', function(){
+            done(new Error('nope'));
+          });
+        });
+      });
+    });
+
+    it('should pass `data` of error object', function(done){
+      var srv = http();
+      var sio = io(srv);
+
+      srv.listen(function(){
+        var clientSocket = client(srv, { multiplex: false });
+
+        clientSocket.emit('join', 'woot');
+
+        clientSocket.on('error', function(err){
+          expect(err).to.eql({ a: 'b', c: 3 });
+          done();
+        });
+
+        sio.on('connection', function(socket){
+          socket.use(function(event, next){
+            var err = new Error('Authentication error');
+            err.data = { a: 'b', c: 3 };
+            next(err);
+          });
+
+          socket.on('join', function(){
+            done(new Error('nope'));
+          });
         });
       });
     });

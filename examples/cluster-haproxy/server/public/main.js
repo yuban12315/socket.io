@@ -279,4 +279,8 @@ $(function() {
     log('attempt to reconnect has failed');
   });
 
+  socket.on('my-name-is', function (serverName) {
+    log('host is now ' + serverName);
+  })
+
 });
